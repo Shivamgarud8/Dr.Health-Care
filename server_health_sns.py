@@ -1,162 +1,118 @@
 #!/usr/bin/env python3
-"""
-server_health_sns.py
-"""
 
-import os
-import sys
-import time
-import socket
-import platform
-import json
-import logging
-from datetime import datetime, timedelta
-
-import psutil
 import boto3
-from botocore.exceptions import ClientError
+import psutil
+import socket
+import json
+from datetime import datetime
 
-# -------------------- CONFIG --------------------
+# ------------------------------
+# CONFIG
+# ------------------------------
 
-HOURLY_TOPIC_ARN = os.getenv("HOURLY_TOPIC_ARN", "arn:aws:sns:eu-north-1:815563881932:DrHourly")
-ALERT_TOPIC_ARN  = os.getenv("ALERT_TOPIC_ARN",  "arn:aws:sns:eu-north-1:815563881932:DrAlert") # chanages according to your sns
+AWS_ACCESS_KEY = "ENTER-YOUR-KEY"
+AWS_SECRET_KEY = "ENTER-YOUR-PASWORD"
+AWS_REGION     = "eu-north-1"
 
-CPU_ALERT_THRESHOLD = float(os.getenv("CPU_ALERT_THRESHOLD", "80.0"))
+SNS_TOPIC_ARN  = "ADD-YOUR SNS "
 
-ALERT_COOLDOWN_SECONDS = int(os.getenv("ALERT_COOLDOWN_SECONDS", str(10 * 60)))
-
-AWS_REGION = os.getenv("AWS_REGION", "eu-north-1")  # make accrding to you 
-
-LAST_ALERT_FILE = "/var/tmp/server_health_last_alert_time.txt"
-
-# ------------------ END CONFIG ------------------
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger("server-health-sns")
+CPU_ALERT_THRESHOLD = 40
+# ------------------------------
 
 
-def read_last_alert_time():
-    try:
-        with open(LAST_ALERT_FILE, "r") as f:
-            return float(f.read().strip())
-    except:
-        return 0.0
+# Color Codes
+GREEN  = "\033[32m"
+YELLOW = "\033[33m"
+ORANGE = "\033[38;5;208m"
+RED    = "\033[31m"
+BLUE   = "\033[34m"
+RESET  = "\033[0m"
 
 
-def write_last_alert_time(ts):
-    try:
-        with open(LAST_ALERT_FILE, "w") as f:
-            f.write(str(ts))
-    except Exception as e:
-        logger.warning("Could not write alert file: %s", e)
+def cpu_color(value):
+    if value <= 40:
+        return f"{GREEN}{value}%{RESET}"
+    elif value <= 60:
+        return f"{YELLOW}{value}%{RESET}"
+    elif value <= 80:
+        return f"{ORANGE}{value}%{RESET}"
+    else:
+        return f"{RED}{value}%{RESET}"
 
 
-def human_readable_bytes(n):
-    for unit in ['B','KB','MB','GB','TB']:
-        if n < 1024.0:
-            return f"{n:3.1f}{unit}"
-        n /= 1024.0
-    return f"{n:.1f}PB"
+def send_sns(subject, message):
+    sns = boto3.client(
+        "sns",
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_KEY
+    )
+
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject[:100],
+        Message=message
+    )
 
 
 def collect_metrics():
-    now = datetime.utcnow().isoformat() + "Z"
     hostname = socket.gethostname()
-    uname = platform.uname()
+    cpu = psutil.cpu_percent(interval=1)
+    mem = psutil.virtual_memory().percent
+    disk = psutil.disk_usage("/").percent
 
-    cpu_percent = psutil.cpu_percent(interval=1)
-    cpu_per_core = psutil.cpu_percent(interval=0.5, percpu=True)
+    now = datetime.utcnow().isoformat() + "Z"
 
-    try:
-        load1, load5, load15 = os.getloadavg()
-    except:
-        load1 = load5 = load15 = 0.0
-
-    virtual_mem = psutil.virtual_memory()
-    swap = psutil.swap_memory()
-    disk_usage = psutil.disk_usage("/")
-    net_io = psutil.net_io_counters()
-
-    metrics = {
-        "timestamp_utc": now,
+    return {
+        "time": now,
         "hostname": hostname,
-        "platform": f"{uname.system} {uname.release} ({uname.machine})",
-        "cpu_percent": cpu_percent,
-        "cpu_per_core": cpu_per_core,
-        "load_avg": {"1m": load1, "5m": load5, "15m": load15},
-        "memory": {
-            "total": virtual_mem.total,
-            "used": virtual_mem.used,
-            "percent": virtual_mem.percent
-        },
-        "swap": {
-            "total": swap.total,
-            "used": swap.used,
-            "percent": swap.percent
-        },
-        "disk": {
-            "total": disk_usage.total,
-            "used": disk_usage.used,
-            "percent": disk_usage.percent
-        },
-        "network": {
-            "bytes_sent": net_io.bytes_sent,
-            "bytes_recv": net_io.bytes_recv
-        }
+        "cpu": cpu,
+        "memory": mem,
+        "disk": disk
     }
 
-    return metrics
+
+def format_summary(m):
+    return f"""
+{BLUE}📊 5-Min Server Health Summary{RESET}
+
+🖥️ Server: {m['hostname']}
+⏱️ Time (UTC): {m['time']}
+
+⚙️ CPU Usage: {cpu_color(m['cpu'])}
+💾 Memory Usage: {m['memory']}%
+📦 Disk Usage: {m['disk']}%
+
+JSON Metrics:
+{json.dumps(m, indent=2)}
+"""
 
 
-def format_summary(metrics):
-    return (
-        f"Server Health Summary - {metrics['hostname']}\n"
-        f"CPU: {metrics['cpu_percent']}%\n"
-        f"Memory: {metrics['memory']['percent']}%\n"
-        f"Disk: {metrics['disk']['percent']}%\n"
-    )
+def format_alert(m):
+    return f"""
+{RED}🚨 HIGH CPU ALERT TRIGGERED!{RESET}
 
+🖥️ Server: {m['hostname']}
+⏱️ Time (UTC): {m['time']}
 
-def publish_sns(client, topic_arn, subject, message):
-    try:
-        resp = client.publish(
-            TopicArn=topic_arn,
-            Subject=subject[:100],
-            Message=message
-        )
-        logger.info("SNS Published: %s", resp.get("MessageId"))
-    except Exception as e:
-        logger.error("SNS Publish Error: %s", e)
+⚠️ CPU Usage: {cpu_color(m['cpu'])}  (Threshold: {CPU_ALERT_THRESHOLD}%)
+💾 Memory: {m['memory']}%
+📦 Disk: {m['disk']}%
+
+JSON Metrics:
+{json.dumps(m, indent=2)}
+"""
 
 
 def main():
-    sns = boto3.client("sns", region_name=AWS_REGION)
+    m = collect_metrics()
 
-    metrics = collect_metrics()
-    summary = format_summary(metrics)
-    message_json = json.dumps(metrics, indent=2)
+    # Send summary email always
+    send_sns(f"[Summary] CPU: {m['cpu']}%", format_summary(m))
 
-    # Hourly Summary
-    publish_sns(
-        sns,
-        HOURLY_TOPIC_ARN,
-        f"[Hourly] Health Update - CPU {metrics['cpu_percent']}%",
-        summary + "\n\n" + message_json
-    )
-
-    # Alert Logic
-    cpu = metrics["cpu_percent"]
-    now_ts = time.time()
-    last_alert_ts = read_last_alert_time()
-
-    if cpu > CPU_ALERT_THRESHOLD and (now_ts - last_alert_ts > ALERT_COOLDOWN_SECONDS):
-        publish_sns(
-            sns,
-            ALERT_TOPIC_ARN,
-            f"[ALERT] HIGH CPU: {cpu}%",
-            summary + "\n\n" + message_json
-        )
-        write_last_alert_time(now_ts)
+    # Alert if CPU above threshold
+    if m["cpu"] > CPU_ALERT_THRESHOLD:
+        send_sns(f"[ALERT] HIGH CPU {m['cpu']}%", format_alert(m))
 
 
 if __name__ == "__main__":
