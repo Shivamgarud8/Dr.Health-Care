@@ -1,69 +1,150 @@
 #!/bin/bash
+set -e
 
-echo "========================================"
-echo "   Dr.Health-Care Server Setup Script    "
-echo "========================================"
+echo "🚀 Starting Server Health Monitor Installation..."
+sleep 1
 
-# ----- CONFIG -----
-REPO_URL="https://github.com/Shivamgarud8/Dr.Health-Care.git"
-BASE_DIR="/home/ubuntu/server-scripts"
-PROJECT_DIR="$BASE_DIR/health-monitor"
-VENV_DIR="$BASE_DIR/health-env"
-LOG_FILE="/var/log/server_health_sns.log"
-
-# CHANGE THESE ARNs BEFORE RUNNING!
-HOURLY_ARN="arn:aws:sns:eu-north-1:XXXXXXXXXXXX:HourlyHealth"
-ALERT_ARN="arn:aws:sns:eu-north-1:XXXXXXXXXXXX:InstantAlerts"
-
-# ----- START -----
-echo "[1/10] Updating system..."
+# -----------------------------
+# 1. UPDATE SYSTEM
+# -----------------------------
+echo "🔧 Updating system packages..."
 sudo apt update -y
-sudo apt install -y python3 python3-venv git
+sudo apt install -y python3 python3-pip
 
-echo "[2/10] Creating directories..."
-mkdir -p "$BASE_DIR"
-cd "$BASE_DIR"
+# -----------------------------
+# 2. INSTALL PYTHON DEPENDENCIES
+# -----------------------------
+echo "📦 Installing Python packages..."
+pip3 install boto3 psutil
 
-echo "[3/10] Cloning GitHub repo..."
-rm -rf Dr.Health-Care health-monitor
-git clone "$REPO_URL"
-mv Dr.Health-Care health-monitor
-cd health-monitor
+# -----------------------------
+# 3. CREATE FOLDERS
+# -----------------------------
+echo "📁 Creating project structure..."
+mkdir -p ~/server-scripts
+touch ~/cron.log
 
-echo "[4/10] Creating Python virtual environment..."
-python3 -m venv "$VENV_DIR"
+# -----------------------------
+# 4. CREATE PYTHON MONITOR SCRIPT
+# -----------------------------
+echo "📝 Creating server-monitor.py..."
 
-echo "[5/10] Installing Python dependencies..."
-source "$VENV_DIR/bin/activate"
-pip install boto3 psutil
-deactivate
+cat << 'EOF' > ~/server-scripts/server-monitor.py
+#!/usr/bin/env python3
 
-echo "[6/10] Setting SNS Topic ARNs..."
-echo "export HOURLY_TOPIC_ARN=\"$HOURLY_ARN\"" >> ~/.bashrc
-echo "export ALERT_TOPIC_ARN=\"$ALERT_ARN\"" >> ~/.bashrc
-source ~/.bashrc
+import boto3
+import psutil
+import socket
+import json
+from datetime import datetime
 
-echo "[7/10] Making script executable..."
-chmod +x server_health_sns.py
+AWS_ACCESS_KEY = "ENTER-YOUR-KEY"
+AWS_SECRET_KEY = "ENTER-YOUR-SECRET-KEY"
+AWS_REGION     = "eu-north-1"
+SNS_TOPIC_ARN  = "ADD-YOUR SNS "
 
-echo "[8/10] Creating log file..."
-sudo touch "$LOG_FILE"
-sudo chmod 666 "$LOG_FILE"
+CPU_ALERT_THRESHOLD = 40
 
-echo "[9/10] Adding CRON job (every 5 min)..."
-CRON_JOB="*/5 * * * * $VENV_DIR/bin/python $PROJECT_DIR/server_health_sns.py >> $LOG_FILE 2>&1"
+def colorize(cpu):
+    if 40 <= cpu <= 60:
+        return "🟡 Moderate Load"
+    elif 61 <= cpu <= 80:
+        return "🟠 High Load"
+    elif cpu > 80:
+        return "🔴 Critical Load"
+    return "🟢 Normal"
 
-# Remove old cron job to avoid duplicates
-crontab -l | grep -v "server_health_sns.py" > /tmp/newcron
-echo "$CRON_JOB" >> /tmp/newcron
-crontab /tmp/newcron
-rm /tmp/newcron
+def send_sns(subject, message):
+    sns = boto3.client(
+        "sns",
+        region_name=AWS_REGION,
+        aws_access_key_id=AWS_ACCESS_KEY,
+        aws_secret_access_key=AWS_SECRET_KEY
+    )
+    sns.publish(
+        TopicArn=SNS_TOPIC_ARN,
+        Subject=subject[:100],
+        Message=message
+    )
 
-echo "[10/10] Running first test..."
-$VENV_DIR/bin/python $PROJECT_DIR/server_health_sns.py
+def collect_metrics():
+    hostname = socket.gethostname()
+    cpu = psutil.cpu_percent(interval=1)
+    mem = psutil.virtual_memory().percent
+    disk = psutil.disk_usage("/").percent
+    now = datetime.utcnow().isoformat() + "Z"
 
-echo "========================================"
-echo " INSTALLATION COMPLETE!"
-echo " SNS health monitor is running every 5 min."
-echo " Logs: $LOG_FILE"
-echo "========================================"
+    return {
+        "time": now,
+        "hostname": hostname,
+        "cpu": cpu,
+        "memory": mem,
+        "disk": disk,
+        "cpu_color": colorize(cpu)
+    }
+
+def format_summary(m):
+    return f"""
+📊 **5-Min Server Health Summary**
+
+🖥️ Server: {m['hostname']}
+⏱️ Time: {m['time']}
+
+⚙️ CPU Usage: {m['cpu']}% → {m['cpu_color']}
+💾 Memory: {m['memory']}%
+📦 Disk: {m['disk']}%
+
+📘 JSON:
+{json.dumps(m, indent=2)}
+"""
+
+def format_alert(m):
+    return f"""
+🚨 **HIGH CPU ALERT**
+
+🖥️ Server: {m['hostname']}
+⏱️ Time: {m['time']}
+
+⚠️ CPU Usage: {m['cpu']}% → {m['cpu_color']}
+💾 Memory: {m['memory']}%
+📦 Disk: {m['disk']}%
+
+📘 JSON:
+{json.dumps(m, indent=2)}
+"""
+
+def main():
+    m = collect_metrics()
+
+    summary_msg = format_summary(m)
+    send_sns(f"[Summary] CPU: {m['cpu']}%", summary_msg)
+
+    if m["cpu"] > CPU_ALERT_THRESHOLD:
+        alert_msg = format_alert(m)
+        send_sns(f"[ALERT] HIGH CPU {m['cpu']}%", alert_msg)
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x ~/server-scripts/server-monitor.py
+
+# -----------------------------
+# 5. CRON JOB SETUP
+# -----------------------------
+echo "⏱️ Setting cron job..."
+
+CRON_JOB="*/5 * * * * /usr/bin/python3 /home/ubuntu/server-scripts/server-monitor.py >> /home/ubuntu/cron.log 2>&1"
+
+(crontab -u ubuntu -l 2>/dev/null | grep -F "$CRON_JOB") || \
+(crontab -u ubuntu -l 2>/dev/null; echo "$CRON_JOB") | crontab -u ubuntu -
+
+# -----------------------------
+# 6. FIRST TEST RUN
+# -----------------------------
+echo "🚀 Running first test manually..."
+python3 ~/server-scripts/server-monitor.py
+
+echo "🎉 Installation Complete!"
+echo "Logs: /home/ubuntu/cron.log"
+echo "Script: /home/ubuntu/server-scripts/server-monitor.py"
