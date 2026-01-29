@@ -48,6 +48,7 @@ This project:
 
 ---
 ![jenkins](images/1.png)
+
 ![jenkins](images/2.png)
 
 
@@ -111,12 +112,11 @@ SNS_TOPIC_ARN  = "arn:aws:sns:region:account-id:topic-name"
 | 81%+ | Critical |
 
 ---
-![jenkins](images/4.png)
-![jenkins](images/55.png)
+
 ## ⏰ Automating with Cron
 
 Run the script automatically every 5 minutes.
-
+![jenkins](images/3.png)
 Edit crontab:
 
 ```bash
