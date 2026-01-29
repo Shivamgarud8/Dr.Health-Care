@@ -45,14 +45,9 @@ This project:
 ✔ Uses low-cost AWS SNS  
 
 ➡ Result: **Near-zero cost server monitoring**
-
----
 ![jenkins](images/1.png)
-
+---
 ![jenkins](images/2.png)
-
-
-
 ---
 
 ## ⚙️ Features
@@ -116,7 +111,9 @@ SNS_TOPIC_ARN  = "arn:aws:sns:region:account-id:topic-name"
 ## ⏰ Automating with Cron
 
 Run the script automatically every 5 minutes.
+---
 ![jenkins](images/3.png)
+---
 Edit crontab:
 
 ```bash
