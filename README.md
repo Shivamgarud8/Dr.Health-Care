@@ -1,4 +1,4 @@
-# DR. Health care 📊 Server Health Monitor with AWS SNS 
+# Dr. Health Care -Server Health Monitor with AWS SNS 
 ### (Cost-Optimized Alternative to CloudWatch Alarms)
 
 ---
